@@ -1,11 +1,13 @@
 from flask import Flask, request, jsonify
 import sqlite3
+import os
 
 app = Flask(__name__)
 
 
 def get_db_connection():
-    conn = sqlite3.connect("/home/logixsy/learnings/backend-grok/library_api_render/books.db")
+    db_path = os.path.join(os.path.dirname(__file__), "books.db")
+    conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     return conn
 
