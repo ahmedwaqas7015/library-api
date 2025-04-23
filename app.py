@@ -1,14 +1,28 @@
 from flask import Flask, request, jsonify
-from flask_jwt_extended import JWTManager, create_access_token, jwt_required
+from flask_jwt_extended import (
+    JWTManager, create_access_token, jwt_required, get_jwt_identity,
+    get_jwt
+    )
 from passlib.hash import pbkdf2_sha256
+from datetime import timedelta
 import sqlite3
 import os
 
 app = Flask(__name__)
 
+"""
+eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJmcmVzaCI6ZmFsc2UsImlhdCI6MTc0NTMwODk1MCwianRpIjoiMGFhNDNkNjAtNzcyZS00OGMyLThhYjMtODM4N2I5MjRhNDY5IiwidHlwZSI6ImFjY2VzcyIsInN1YiI6InVzZXIiLCJuYmYiOjE3NDUzMDg5NTAsImV4cCI6MTc0NTMwOTg1MH0.8x8MMfOtJbHy6XByfUGOzXwBwPZR16LP3_QUmzjh_QI
+eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJmcmVzaCI6ZmFsc2UsImlhdCI6MTc0NTMwOTA1NSwianRpIjoiMmE1ZTZjYzYtMjllNS00ODk4LWJkYzUtMmI3MmM5MDMyYjg3IiwidHlwZSI6ImFjY2VzcyIsInN1YiI6InRlc3QiLCJuYmYiOjE3NDUzMDkwNTUsImV4cCI6MTc0NTMwOTk1NX0.ULx3lG-bE4jGTdH_k0ZMOtFQE3A3n00_5-jJTrGuQ4Q
+"""
+
 # JWT Configuration
 app.config['JWT_SECRET_KEY'] = "12345678"
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(minutes=15)
+app.config['JWT_BLACKLIST_ENABLED'] = True
+app.config['JWT_BLACKLIST_TOKEN_CHECKS'] = ['access']
 jwt = JWTManager(app)
+
+jwt_blacklist = set()
 
 def get_db_connection():
     db_path = os.path.join(os.path.dirname(__file__), "books.db")
@@ -19,15 +33,6 @@ def get_db_connection():
 def init_db():
     try:
         with get_db_connection() as conn:
-            # create books table
-            conn.execute('''
-            CREATE TABLE IF NOT EXISTS books ( 
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT NOT NULL,
-                author TEXT NOT NULL,
-                read INTEGER DEFAULT 0
-            )
-        ''')
             # create users table
             conn.execute('''
             CREATE TABLE IF NOT EXISTS users (
@@ -36,12 +41,28 @@ def init_db():
                 password TEXT NOT NULL
             )
         ''')
+            # create books table
+            conn.execute('''
+            CREATE TABLE IF NOT EXISTS books ( 
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                author TEXT NOT NULL,
+                read INTEGER DEFAULT 0,
+                user_id INTEGER NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users (id)
+            )
+        ''')
             conn.commit()
     except sqlite3.Error as e:
         print(f"Error initializing database: {e}")
 
 with app.app_context():
     init_db()
+
+@jwt.token_in_blocklist_loader
+def check_if_token_revoked(jwt_header, jwt_payload):
+    jti = jwt_payload['jti']
+    return jti in jwt_blacklist
 
 # User registration
 @app.route("/register", methods=["POST"])
@@ -84,8 +105,9 @@ def add_book():
     author = request.form.get("author")
     if not title or not author:
         return jsonify({"error": "Title and author are required"}), 400
+    user_id = get_jwt_identity()
     with get_db_connection() as conn:
-        cursor = conn.execute("INSERT INTO books (title, author) values (?, ?)", (title, author))
+        cursor = conn.execute("INSERT INTO books (title, author, user_id) values (?, ?, ?)", (title, author, user_id))
         conn.commit()
     book_id = cursor.lastrowid
     return jsonify({"message": "Book added", "book": {"id": book_id, "title": title, "author": author, "read": False}}), 201
@@ -94,8 +116,9 @@ def add_book():
 @app.route("/books", methods=["GET"])
 @jwt_required() # get all books (protected)
 def get_books():
+    user_id = get_jwt_identity()
     with get_db_connection() as conn:
-        books = conn.execute("SELECT * FROM books").fetchall()
+        books = conn.execute("SELECT * FROM books WHERE user_id = ?", (user_id,)).fetchall()
     if len(books) == 0:
         return jsonify({"error": "No books found"}), 404
     books_list = [{"id": book['id'], "title": book['title'], "author": book['author'], "read": bool(book['read'])} for book in books]
@@ -106,8 +129,9 @@ def get_books():
 @app.route("/books/<int:book_id>", methods=["GET"])
 @jwt_required() # get specific book (protected)
 def get_book(book_id):
+    user_id = get_jwt_identity()
     with get_db_connection() as conn:
-        book = conn.execute("SELECT * FROM books WHERE id = ?", (book_id,)).fetchone()
+        book = conn.execute("SELECT * FROM books WHERE id = ? AND user_id = ?", (book_id, user_id)).fetchone()
     if book is None:
         return jsonify({"error": "Book not found"}), 404
     return jsonify({"id": book['id'], "title": book['title'], "author": book['author'], "read": bool(book['read'])})
@@ -121,26 +145,16 @@ def update_book(book_id):
     author = request.form.get("author")
     if not title or not author:
         return jsonify({"error": "Title and author are required"}), 400
+    user_id = get_jwt_identity()
     with get_db_connection() as conn:
-        cursor = conn.execute("UPDATE books SET title = ?, author = ? WHERE id = ?", (title, author, book_id))
+        cursor = conn.execute("UPDATE books SET title = ?, author = ? WHERE id = ? AND user_id = ?", (title, author, book_id, user_id))
         conn.commit()
     if cursor.rowcount == 0:
         return jsonify({"error": "Book not found"}), 404
     with get_db_connection() as conn:
-        book = conn.execute("SELECT * FROM books WHERE id = ?", (book_id,)).fetchone()
+        book = conn.execute("SELECT * FROM books WHERE id = ? AND user_id = ?", (book_id, user_id)).fetchone()
         conn.commit()
     return jsonify({"message": f"Book {book_id} updated", "book": {"id": book_id, "author": book['author'], "title": book['title'], "read": bool(book['read'])}})
-
-# delete using DELETE
-@app.route("/books/<int:book_id>", methods=["DELETE"])
-@jwt_required() # delete book (protected)
-def delete_book_delete(book_id):
-    with get_db_connection() as conn:
-        cursor = conn.execute("DELETE FROM books where id = ?", (book_id,))
-        conn.commit()
-    if cursor.rowcount == 0:
-        return jsonify({"error": "Book not found"}), 404
-    return jsonify({"message": f"Book {book_id} deleted"})
 
 # mark book as read
 @app.route("/books/<int:book_id>", methods=["PATCH"])
@@ -149,12 +163,32 @@ def toggle_book_read(book_id):
     read = request.form.get("read")
     if read not in ["true", "false"]:
         return jsonify({"error": "Invalid read status"}), 400
+    user_id = get_jwt_identity()
     with get_db_connection() as conn:
-        cursor = conn.execute("UPDATE books SET read = ? where id = ?", (read, book_id))
+        cursor = conn.execute("UPDATE books SET read = ? where id = ? AND user_id = ?", (read, book_id, user_id))
         conn.commit()
     if cursor.rowcount == 0:
         return jsonify({"error": "Book not found"}), 404
     return jsonify({"message": f"Book {book_id} status updated", "read": bool(read)})
+
+# delete using DELETE
+@app.route("/books/<int:book_id>", methods=["DELETE"])
+@jwt_required() # delete book (protected)
+def delete_book_delete(book_id):
+    user_id = get_jwt_identity()
+    with get_db_connection() as conn:
+        cursor = conn.execute("DELETE FROM books where id = ? AND user_id = ?", (book_id, user_id))
+        conn.commit()
+    if cursor.rowcount == 0:
+        return jsonify({"error": "Book not found"}), 404
+    return jsonify({"message": f"Book {book_id} deleted"})
+
+@app.route("/logout", methods=["POST"])
+@jwt_required()
+def logout():
+    jti = get_jwt()['jti']
+    jwt_blacklist.add(jti)
+    return jsonify({"message": "Token revoked"})
 
 
 if __name__ == "__main__":
