@@ -10,13 +10,10 @@ import os
 
 app = Flask(__name__)
 
-"""
-eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJmcmVzaCI6ZmFsc2UsImlhdCI6MTc0NTMwODk1MCwianRpIjoiMGFhNDNkNjAtNzcyZS00OGMyLThhYjMtODM4N2I5MjRhNDY5IiwidHlwZSI6ImFjY2VzcyIsInN1YiI6InVzZXIiLCJuYmYiOjE3NDUzMDg5NTAsImV4cCI6MTc0NTMwOTg1MH0.8x8MMfOtJbHy6XByfUGOzXwBwPZR16LP3_QUmzjh_QI
-eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJmcmVzaCI6ZmFsc2UsImlhdCI6MTc0NTMwOTA1NSwianRpIjoiMmE1ZTZjYzYtMjllNS00ODk4LWJkYzUtMmI3MmM5MDMyYjg3IiwidHlwZSI6ImFjY2VzcyIsInN1YiI6InRlc3QiLCJuYmYiOjE3NDUzMDkwNTUsImV4cCI6MTc0NTMwOTk1NX0.ULx3lG-bE4jGTdH_k0ZMOtFQE3A3n00_5-jJTrGuQ4Q
-"""
 
 # JWT Configuration
 app.config['JWT_SECRET_KEY'] = "12345678"
+app.config['TESTING'] = False 
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(minutes=15)
 app.config['JWT_BLACKLIST_ENABLED'] = True
 app.config['JWT_BLACKLIST_TOKEN_CHECKS'] = ['access']
@@ -25,7 +22,7 @@ jwt = JWTManager(app)
 jwt_blacklist = set()
 
 def get_db_connection():
-    db_path = os.path.join(os.path.dirname(__file__), "books.db")
+    db_path = "test_books.db" if app.config["TESTING"] else os.path.join(os.path.dirname(__file__), "books.db")
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     return conn
@@ -92,7 +89,7 @@ def login():
     with get_db_connection() as conn:
         user = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
         if not user or not pbkdf2_sha256.verify(password, user['password']):
-            return jsonify({"error": "Invalid Credentials"}), 401
+            return jsonify({"error": "Invalid credentials"}), 401
     # Create JWT token
     access_token = create_access_token(identity=username)
     return jsonify({"message": "Login successful", "access_token": access_token})        
